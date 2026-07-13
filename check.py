@@ -13,8 +13,7 @@ from playwright.sync_api import sync_playwright
 BASE_API = "https://flightrewardfinder.qantas.com/api/search"
 
 SEARCH_WINDOWS = [
-    ("2027-06-01", "2027-06-30"),
-    ("2027-07-01", "2027-07-31"),
+    ("2027-07-13", "2027-06-15")
 ]
 
 ALERT_PASSENGERS = 2       # trigger an email only when a fare bucket has >= this many seats
