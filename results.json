@@ -1,0 +1,102 @@
+{
+  "generated_at": "2026-07-13T08:10:15.630782+00:00",
+  "search_windows": [
+    [
+      "2027-06-01",
+      "2027-06-30"
+    ],
+    [
+      "2027-07-01",
+      "2027-07-31"
+    ]
+  ],
+  "alert_passengers": 1,
+  "flights": [
+    {
+      "departsAt": "2027-06-01T16:10:00",
+      "arrivesAt": "2027-06-02T07:10:00",
+      "originCode": "MEL",
+      "originName": "Melbourne",
+      "destCode": "FRA",
+      "destName": "Frankfurt",
+      "cabin": "Business",
+      "points": 182900,
+      "tax": 709,
+      "currency": "AU$",
+      "seats": 1,
+      "stopovers": 1,
+      "duration": "23 hours",
+      "legs": [
+        {
+          "departsAt": "2027-06-01T16:10:00",
+          "arrivesAt": "2027-06-01T22:25:00",
+          "duration": "10h 45m",
+          "layoverDuration": "01h 45m",
+          "flightNumber": "UL605",
+          "operatedBy": "Srilankan Airlines",
+          "equipment": "A330",
+          "originCode": "MEL",
+          "originName": "Melbourne",
+          "destCode": "CMB",
+          "destName": "Colombo"
+        },
+        {
+          "departsAt": "2027-06-02T00:10:00",
+          "arrivesAt": "2027-06-02T07:10:00",
+          "duration": "10h 30m",
+          "layoverDuration": "00h 00m",
+          "flightNumber": "UL557",
+          "operatedBy": "Srilankan Airlines",
+          "equipment": "A330",
+          "originCode": "CMB",
+          "originName": "Colombo",
+          "destCode": "FRA",
+          "destName": "Frankfurt"
+        }
+      ]
+    },
+    {
+      "departsAt": "2027-06-08T16:10:00",
+      "arrivesAt": "2027-06-09T07:10:00",
+      "originCode": "SYD",
+      "originName": "Sydney",
+      "destCode": "FRA",
+      "destName": "Frankfurt",
+      "cabin": "Business",
+      "points": 182900,
+      "tax": 693,
+      "currency": "AU$",
+      "seats": 1,
+      "stopovers": 1,
+      "duration": "23 hours",
+      "legs": [
+        {
+          "departsAt": "2027-06-08T16:10:00",
+          "arrivesAt": "2027-06-08T22:55:00",
+          "duration": "11h 15m",
+          "layoverDuration": "01h 15m",
+          "flightNumber": "UL607",
+          "operatedBy": "Srilankan Airlines",
+          "equipment": "A330",
+          "originCode": "SYD",
+          "originName": "Sydney",
+          "destCode": "CMB",
+          "destName": "Colombo"
+        },
+        {
+          "departsAt": "2027-06-09T00:10:00",
+          "arrivesAt": "2027-06-09T07:10:00",
+          "duration": "10h 30m",
+          "layoverDuration": "00h 00m",
+          "flightNumber": "UL557",
+          "operatedBy": "Srilankan Airlines",
+          "equipment": "A330",
+          "originCode": "CMB",
+          "originName": "Colombo",
+          "destCode": "FRA",
+          "destName": "Frankfurt"
+        }
+      ]
+    }
+  ]
+}
