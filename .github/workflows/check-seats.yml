@@ -33,13 +33,48 @@ jobs:
         run: |
           git config user.name "seat-checker-bot"
           git config user.email "bot@users.noreply.github.com"
-          git add state.json results.json last_raw_response.json debug_screenshot.png || true
-          if ! git diff --staged --quiet; then
+
+          for i in 1 2 3 4 5; do
+            git add state.json results.json last_raw_response.json debug_screenshot.png || true
+
+            if git diff --cached --quiet; then
+              echo "Nothing to commit."
+              break
+            fi
+
             git commit -m "Update seat state [skip ci]"
-            git pull --rebase origin main
-            git push
-          fi
+
+            if git push origin HEAD:main; then
+              echo "Pushed successfully."
+              break
+            fi
+
+            echo "Push rejected, rebuilding commit on latest main (attempt $i)..."
+            git fetch origin main
+            git reset --soft origin/main
+          done
 
       - name: Fail job if check step failed
         if: steps.run_check.outcome == 'failure'
         run: exit 1
+
+      - name: Notify by email if this job failed
+        if: failure()
+        run: |
+          RUN_URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          {
+            echo "From: ${{ secrets.GMAIL_USER }}"
+            echo "To: ${{ secrets.ALERT_EMAIL_TO }}"
+            echo "Subject: Qantas Seat Checker FAILED"
+            echo ""
+            echo "The Qantas Reward Seat Check workflow failed and needs a look."
+            echo ""
+            echo "Run logs: $RUN_URL"
+          } > /tmp/failure_mail.txt
+
+          curl --url 'smtps://smtp.gmail.com:465' \
+            --ssl-reqd \
+            --mail-from "${{ secrets.GMAIL_USER }}" \
+            --mail-rcpt "${{ secrets.ALERT_EMAIL_TO }}" \
+            --user "${{ secrets.GMAIL_USER }}:${{ secrets.GMAIL_APP_PASSWORD }}" \
+            --upload-file /tmp/failure_mail.txt
