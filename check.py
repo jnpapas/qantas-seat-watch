@@ -11,10 +11,10 @@ from playwright.sync_api import sync_playwright
 
 # --- Configuration ---
 BASE_API = "https://flightrewardfinder.qantas.com/api/search"
-BASE_SEARCH_PAGE = "https://flightrewardfinder.qantas.com/?pg=1&d=;EU&dr={dr}&p=2&c=Business,First"
 
 SEARCH_WINDOWS = [
-    ("2026-07-13", "2026-07-15"),
+    ("2027-06-01", "2027-06-30"),
+    ("2027-07-01", "2027-07-31"),
 ]
 
 ALERT_PASSENGERS = 2       # trigger an email only when a fare bucket has >= this many seats
@@ -22,6 +22,12 @@ FETCH_PASSENGERS = 1       # query broadly so 1-seat results aren't filtered out
 CABINS = "Business,First"
 DEST = ";EU"
 ORIGIN = ";OC"
+
+def build_search_page_url(dr):
+    return (
+        f"https://flightrewardfinder.qantas.com/?pg=1&d={DEST}&dr={dr}"
+        f"&p={ALERT_PASSENGERS}&c={CABINS}"
+    )
 
 STATE_FILE = "state.json"
 RESULTS_FILE = "results.json"
@@ -83,8 +89,6 @@ def fetch_all_flights_for_window(page_obj, dr):
 
 
 def fetch_availability():
-    all_flights = []
-
     with sync_playwright() as p:
         browser = p.chromium.launch(
             args=["--disable-blink-features=AutomationControlled"]
@@ -100,7 +104,7 @@ def fetch_availability():
 
         full_range = f"{SEARCH_WINDOWS[0][0]}I{SEARCH_WINDOWS[-1][1]}"
         try:
-            page.goto(BASE_SEARCH_PAGE.format(dr=full_range),
+            page.goto(build_search_page_url(full_range),
                       wait_until="networkidle", timeout=60000)
         except Exception as e:
             print(f"goto() raised: {e}")
@@ -108,12 +112,14 @@ def fetch_availability():
 
         print(f"Page title after load: {page.title()!r}")
 
+        all_entries = []
         for start, end in SEARCH_WINDOWS:
             dr = f"{start}I{end}"
             print(f"Fetching {dr} ...")
             flights = fetch_all_flights_for_window(page, dr)
             print(f"  -> {len(flights)} flight(s) returned")
-            all_flights.extend(flights)
+            window_url = build_search_page_url(dr)
+            all_entries.extend(flatten_entries(flights, window_url))
 
         try:
             page.screenshot(path=DEBUG_SCREENSHOT, full_page=True)
@@ -122,18 +128,17 @@ def fetch_availability():
 
         browser.close()
 
-    return {"flights": all_flights}
+    return all_entries
 
 
-def flatten_entries(data):
+def flatten_entries(flights, search_url):
     """One dict per (flight, cabin) pair where that cabin has an offer.
-    Includes full airport names and every leg with operating carrier, so
-    the dashboard and email have everything needed without a code lookup."""
+    Includes full airport names, every leg with operating carrier, and the
+    exact search URL (matching this flight's date window) so each result
+    can link straight to a pre-filled search."""
     entries = []
-    if not data:
-        return entries
 
-    for flight in data.get("flights", []):
+    for flight in flights:
         origin = flight.get("origin") or {}
         dest = flight.get("destination") or {}
         legs = []
@@ -174,6 +179,7 @@ def flatten_entries(data):
                 "stopovers": flight.get("stopovers"),
                 "duration": flight.get("duration"),
                 "legs": legs,
+                "searchUrl": search_url,
             })
     return entries
 
@@ -245,6 +251,7 @@ def format_entry_for_email(e):
                 f"      Layover: {leg['layoverDuration']} in "
                 f"{leg['destName']} ({leg['destCode']})"
             )
+    lines.append(f"   Check live: {e.get('searchUrl', 'https://flightrewardfinder.qantas.com/')}")
     return "\n".join(lines)
 
 
@@ -322,7 +329,7 @@ def build_html_email(entries):
               {legs_html}
 
               <div style="margin-top:16px;">
-                <a href="https://flightrewardfinder.qantas.com/"
+                <a href="{e.get('searchUrl', 'https://flightrewardfinder.qantas.com/')}"
                    style="display:inline-block;background:{ink};color:#ffffff;font-size:13px;
                           font-weight:600;text-decoration:none;padding:10px 18px;border-radius:6px;">
                   Check live availability &rarr;
@@ -383,12 +390,17 @@ def send_email(new_entries):
 
 
 def main():
-    data = fetch_availability()
+    try:
+        all_entries = fetch_availability()
+    except Exception as e:
+        print(f"fetch_availability() raised: {e}")
+        with open(RAW_DUMP_FILE, "w") as f:
+            json.dump({"error": str(e)}, f, indent=2)
+        sys.exit(1)
 
     with open(RAW_DUMP_FILE, "w") as f:
-        json.dump(data, f, indent=2)
+        json.dump(all_entries, f, indent=2)
 
-    all_entries = flatten_entries(data) if data is not None else []
     save_results(all_entries)
 
     bookable_entries = [e for e in all_entries if (e.get("seats") or 0) >= ALERT_PASSENGERS]
@@ -396,16 +408,10 @@ def main():
     current_keys = set(entries_by_key.keys())
     previous_keys = load_previous_state()
 
-    if data is not None:
-        print(f"{len(all_entries)} total fare entries found, "
-              f"{len(current_keys)} bookable for {ALERT_PASSENGERS} pax")
+    print(f"{len(all_entries)} total fare entries found, "
+          f"{len(current_keys)} bookable for {ALERT_PASSENGERS} pax")
 
-    save_state(current_keys if data is not None else previous_keys)
-
-    if data is None:
-        print("Could not get a usable API response -- see debug_screenshot.png "
-              "and last_raw_response.json.")
-        sys.exit(1)
+    save_state(current_keys)
 
     new_keys = current_keys - previous_keys
     if new_keys:
