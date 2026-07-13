@@ -8,6 +8,10 @@ from playwright.sync_api import sync_playwright
 
 # --- Configuration ---
 SEARCH_URL = "https://flightrewardfinder.qantas.com/?pg=1&d=;EU&dr=2027-06-01I2027-07-30&p=2&c=Business,First"
+API_URL = (
+    "https://flightrewardfinder.qantas.com/api/search"
+    "?d=%3BEU&dr=2027-06-01I2027-07-30&c=Business%2CFirst&p=2&o=%3BOC"
+)
 STATE_FILE = "state.json"
 RAW_DUMP_FILE = "last_raw_response.json"  # written every run, for debugging the schema
 DEBUG_SCREENSHOT = "debug_screenshot.png"  # written every run, for debugging
@@ -18,18 +22,10 @@ ALERT_TO = os.environ["ALERT_EMAIL_TO"]
 
 
 def fetch_availability():
-    """Drive a real headless browser to the search page and capture the
-    /api/search response body — this handles Cloudflare's bot challenge the
-    same way a normal browser visit does."""
-    captured = {}
-
-    def handle_response(response):
-        if "/api/search" in response.url and response.status == 200:
-            try:
-                captured["data"] = response.json()
-            except Exception:
-                pass
-
+    """Load the search page first (to establish cookies / pass any Cloudflare
+    check the way a normal visit does), then call the known API endpoint
+    directly via an in-page fetch() so it carries the right session/cookies
+    as if the page itself had made the call."""
     with sync_playwright() as p:
         browser = p.chromium.launch(
             args=["--disable-blink-features=AutomationControlled"]
@@ -42,18 +38,30 @@ def fetch_availability():
             viewport={"width": 1366, "height": 900},
             locale="en-AU",
         )
-        page.on("response", handle_response)
 
         try:
             page.goto(SEARCH_URL, wait_until="networkidle", timeout=60000)
         except Exception as e:
             print(f"goto() raised: {e}")
 
-        page.wait_for_timeout(5000)  # let a late-firing API call / challenge resolve
+        page.wait_for_timeout(3000)
 
-        # Always capture debug evidence of what the browser actually saw
-        print(f"Final page title: {page.title()!r}")
-        print(f"Final page URL: {page.url}")
+        print(f"Page title after load: {page.title()!r}")
+        print(f"Page URL after load: {page.url}")
+
+        result = page.evaluate(
+            """
+            async (apiUrl) => {
+                const res = await fetch(apiUrl, { credentials: "include" });
+                const text = await res.text();
+                return { status: res.status, body: text };
+            }
+            """,
+            API_URL,
+        )
+
+        print(f"API call status: {result['status']}")
+
         try:
             page.screenshot(path=DEBUG_SCREENSHOT, full_page=True)
         except Exception as e:
@@ -61,7 +69,16 @@ def fetch_availability():
 
         browser.close()
 
-    return captured.get("data")
+    if result["status"] != 200:
+        print(f"API response body (first 800 chars): {result['body'][:800]}")
+        return None
+
+    try:
+        return json.loads(result["body"])
+    except json.JSONDecodeError as e:
+        print(f"Could not parse API response as JSON: {e}")
+        print(f"Body (first 800 chars): {result['body'][:800]}")
+        return None
 
 
 def extract_flight_keys(data):
@@ -127,22 +144,24 @@ def main():
     with open(RAW_DUMP_FILE, "w") as f:
         json.dump(data, f, indent=2)
 
+    current_keys = extract_flight_keys(data) if data is not None else set()
+    previous_keys = load_previous_state()
+
+    # Always write state.json, even on failure, so the commit step has
+    # something to add (an empty/unchanged state just means no new alert).
+    save_state(current_keys if data is not None else previous_keys)
+
     if data is None:
-        print("Could not capture the /api/search response — page structure "
-              "or Cloudflare challenge may have changed. See workflow logs.")
+        print("Could not get a usable API response — see debug_screenshot.png "
+              "and last_raw_response.json for what the browser actually saw.")
         sys.exit(1)
 
-    current_keys = extract_flight_keys(data)
-    previous_keys = load_previous_state()
     new_keys = current_keys - previous_keys
-
     if new_keys:
         print(f"Found {len(new_keys)} new seat(s) — sending email.")
         send_email(new_keys)
     else:
         print("No new seats this run.")
-
-    save_state(current_keys)
 
 
 if __name__ == "__main__":
