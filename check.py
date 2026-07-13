@@ -7,10 +7,10 @@ from email.mime.text import MIMEText
 from playwright.sync_api import sync_playwright
 
 # --- Configuration ---
-SEARCH_URL = "https://flightrewardfinder.qantas.com/?pg=1&dr=2026-07-15I2026-08-31&p=1&c=Economy,PremiumEconomy,Business,First"
+SEARCH_URL = "https://flightrewardfinder.qantas.com/?pg=1&d=;EU&dr=2027-06-01I2027-07-30&p=2&c=Business,First"
 API_URL = (
     "https://flightrewardfinder.qantas.com/api/search"
-    "?dr=2026-07-15I2026-08-31&c=Economy%2CPremiumEconomy%2CBusiness%2CFirst&p=1&o=%3BOC"
+    "?d=%3BEU&dr=2027-06-01I2027-07-30&c=Business%2CFirst&p=2&o=%3BOC"
 )
 STATE_FILE = "state.json"
 RAW_DUMP_FILE = "last_raw_response.json"  # written every run, for debugging the schema
@@ -146,6 +146,15 @@ def main():
 
     current_keys = extract_flight_keys(data) if data is not None else set()
     previous_keys = load_previous_state()
+
+    if data is not None:
+        if isinstance(data, dict):
+            print(f"Top-level JSON keys: {list(data.keys())}")
+        else:
+            print(f"Top-level JSON type: {type(data)}")
+        preview = json.dumps(data)
+        print(f"Response preview (first 3000 chars):\n{preview[:3000]}")
+        print(f"extract_flight_keys() found {len(current_keys)} entries")
 
     # Always write state.json, even on failure, so the commit step has
     # something to add (an empty/unchanged state just means no new alert).
