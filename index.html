@@ -189,10 +189,16 @@ async function load() {
 
   const rows = flights.map(f => {
     const bookable = (f.seats || 0) >= alertPax;
+    const link = f.searchUrl || 'https://flightrewardfinder.qantas.com/';
     return `
       <tr class="${bookable ? 'bookable' : ''}">
         <td data-label="Depart">${fmtDate(f.departsAt)}</td>
-        <td data-label="Route" class="route">${f.origin}<span class="arrow">→</span>${f.destination}</td>
+        <td data-label="Route" class="route">
+          <a href="${link}" target="_blank" rel="noopener" style="color:inherit;text-decoration:none;border-bottom:1px dotted currentColor;">
+            ${f.originCode}<span class="arrow">→</span>${f.destCode}
+          </a>
+          <div style="font-size:11px;color:var(--text-dim);margin-top:2px;">${f.originName} → ${f.destName}</div>
+        </td>
         <td data-label="Cabin"><span class="cabin-badge cabin-${f.cabin}">${f.cabin}</span></td>
         <td data-label="Points" class="points">${f.points ? f.points.toLocaleString() : '—'}</td>
         <td data-label="Tax">${f.tax ? f.currency + f.tax : '—'}</td>
