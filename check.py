@@ -3,6 +3,7 @@ import os
 import smtplib
 import sys
 import urllib.parse
+from datetime import datetime, timezone
 from email.mime.text import MIMEText
 
 from playwright.sync_api import sync_playwright
@@ -17,12 +18,14 @@ SEARCH_WINDOWS = [
     ("2027-07-01", "2027-07-31"),
 ]
 
-PASSENGERS = 2
+ALERT_PASSENGERS = 2       # trigger an email only when a fare bucket has >= this many seats
+FETCH_PASSENGERS = 1       # query broadly so 1-seat results aren't filtered out server-side
 CABINS = "Business,First"
 DEST = ";EU"
 ORIGIN = ";OC"
 
-STATE_FILE = "state.json"
+STATE_FILE = "state.json"          # tracks only >=2-seat entries, for email diffing
+RESULTS_FILE = "results.json"      # ALL entries found, for the dashboard
 RAW_DUMP_FILE = "last_raw_response.json"
 DEBUG_SCREENSHOT = "debug_screenshot.png"
 
@@ -36,7 +39,7 @@ def build_api_url(dr, page=1):
         "d": DEST,
         "dr": dr,
         "c": CABINS,
-        "p": PASSENGERS,
+        "p": FETCH_PASSENGERS,
         "o": ORIGIN,
         "pg": page,
     }
@@ -44,7 +47,6 @@ def build_api_url(dr, page=1):
 
 
 def fetch_all_flights_for_window(page_obj, dr):
-    """Fetch every page of results for one date-range window."""
     all_flights = []
     current_page = 1
     max_known_page = 1
@@ -82,9 +84,6 @@ def fetch_all_flights_for_window(page_obj, dr):
 
 
 def fetch_availability():
-    """Load the search page first (to establish cookies / pass any Cloudflare
-    check the way a normal visit does), then call the API directly for each
-    month window via an in-page fetch()."""
     all_flights = []
 
     with sync_playwright() as p:
@@ -127,31 +126,44 @@ def fetch_availability():
     return {"flights": all_flights}
 
 
-def extract_flight_keys(data):
-    """Turns flights into one string per (date, route, cabin) where at
-    least PASSENGERS seats are actually available -- this is the real
-    'bookable for both of us' check, done here as a safety net even
-    though the API's own p= filter should already handle it."""
-    keys = set()
+def flatten_entries(data):
+    """One dict per (flight, cabin) pair where that cabin actually has an
+    offer -- this is the full picture, used for both the dashboard and the
+    alert-worthy subset."""
+    entries = []
     if not data:
-        return keys
+        return entries
 
     for flight in data.get("flights", []):
         origin = (flight.get("origin") or {}).get("code")
         dest = (flight.get("destination") or {}).get("code")
         departs = flight.get("departsAt")
+        stopovers = flight.get("stopovers")
+        duration = flight.get("duration")
         cabins = flight.get("cabins") or {}
 
         for cabin_name in ("Business", "First"):
             cabin = cabins.get(cabin_name)
-            if cabin and cabin.get("seats", 0) >= PASSENGERS:
-                points = cabin.get("points")
-                seats = cabin.get("seats")
-                keys.add(
-                    f"{departs} | {origin}->{dest} | {cabin_name} | "
-                    f"{points} pts | {seats} seats"
-                )
-    return keys
+            if not cabin:
+                continue
+            entries.append({
+                "departsAt": departs,
+                "origin": origin,
+                "destination": dest,
+                "cabin": cabin_name,
+                "points": cabin.get("points"),
+                "tax": cabin.get("tax"),
+                "currency": cabin.get("currency"),
+                "seats": cabin.get("seats"),
+                "stopovers": stopovers,
+                "duration": duration,
+            })
+    return entries
+
+
+def entry_key(e):
+    return (f"{e['departsAt']} | {e['origin']}->{e['destination']} | "
+            f"{e['cabin']} | {e['points']} pts | {e['seats']} seats")
 
 
 def load_previous_state():
@@ -166,8 +178,20 @@ def save_state(keys):
         json.dump(sorted(keys), f, indent=2)
 
 
+def save_results(entries):
+    entries_sorted = sorted(entries, key=lambda e: (e["departsAt"] or "", e["cabin"]))
+    payload = {
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "search_windows": SEARCH_WINDOWS,
+        "alert_passengers": ALERT_PASSENGERS,
+        "flights": entries_sorted,
+    }
+    with open(RESULTS_FILE, "w") as f:
+        json.dump(payload, f, indent=2)
+
+
 def send_email(new_keys):
-    body = "New Qantas reward seats found (2 pax, MEL/SYD-Europe, Business/First):\n\n"
+    body = f"New Qantas reward seats found ({ALERT_PASSENGERS} pax, MEL/SYD-Europe, Business/First):\n\n"
     body += "\n".join(sorted(new_keys))
     body += "\n\nCheck live: https://flightrewardfinder.qantas.com/"
 
@@ -187,12 +211,16 @@ def main():
     with open(RAW_DUMP_FILE, "w") as f:
         json.dump(data, f, indent=2)
 
-    current_keys = extract_flight_keys(data) if data is not None else set()
+    all_entries = flatten_entries(data) if data is not None else []
+    save_results(all_entries)
+
+    bookable_entries = [e for e in all_entries if (e.get("seats") or 0) >= ALERT_PASSENGERS]
+    current_keys = {entry_key(e) for e in bookable_entries}
     previous_keys = load_previous_state()
 
     if data is not None:
-        print(f"extract_flight_keys() found {len(current_keys)} bookable "
-              f"entries (>= {PASSENGERS} seats)")
+        print(f"{len(all_entries)} total fare entries found, "
+              f"{len(current_keys)} bookable for {ALERT_PASSENGERS} pax")
 
     save_state(current_keys if data is not None else previous_keys)
 

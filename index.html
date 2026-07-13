@@ -1,0 +1,220 @@
+<!DOCTYPE html>
+<html lang="en-AU">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Reward Seat Watch — MEL/SYD to Europe</title>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,600&family=JetBrains+Mono:wght@400;500;700&display=swap');
+
+  :root {
+    --ink: #0E1116;
+    --panel: #171B22;
+    --panel-line: rgba(255,255,255,0.08);
+    --text: #E8E6E1;
+    --text-dim: #8B92A0;
+    --gold: #C9A227;
+    --green: #4FA97C;
+    --green-dim: rgba(79,169,124,0.12);
+  }
+
+  * { box-sizing: border-box; }
+
+  body {
+    margin: 0;
+    background: var(--ink);
+    color: var(--text);
+    font-family: 'JetBrains Mono', monospace;
+    padding: 40px 24px 80px;
+  }
+
+  .wrap { max-width: 1000px; margin: 0 auto; }
+
+  header {
+    margin-bottom: 32px;
+    border-bottom: 1px solid var(--panel-line);
+    padding-bottom: 24px;
+  }
+
+  h1 {
+    font-family: 'Fraunces', serif;
+    font-weight: 600;
+    font-size: 34px;
+    margin: 0 0 8px;
+    letter-spacing: -0.01em;
+  }
+
+  .subtitle {
+    color: var(--text-dim);
+    font-size: 13px;
+    margin: 0;
+  }
+
+  .meta {
+    display: flex;
+    gap: 24px;
+    margin-top: 16px;
+    font-size: 12px;
+    color: var(--text-dim);
+    flex-wrap: wrap;
+  }
+
+  .meta strong { color: var(--text); font-weight: 500; }
+
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    background: var(--panel);
+    font-size: 13px;
+  }
+
+  thead th {
+    text-align: left;
+    font-weight: 500;
+    color: var(--text-dim);
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    font-size: 10px;
+    padding: 12px 14px;
+    border-bottom: 1px solid var(--panel-line);
+  }
+
+  tbody td {
+    padding: 12px 14px;
+    border-bottom: 1px solid var(--panel-line);
+    white-space: nowrap;
+  }
+
+  tbody tr:last-child td { border-bottom: none; }
+
+  tbody tr.bookable { background: var(--green-dim); }
+
+  .cabin-badge {
+    display: inline-block;
+    padding: 2px 8px;
+    border-radius: 2px;
+    font-size: 11px;
+    font-weight: 500;
+  }
+  .cabin-Business { background: rgba(201,162,39,0.15); color: var(--gold); }
+  .cabin-First { background: rgba(232,230,225,0.12); color: var(--text); }
+
+  .points { color: var(--gold); font-weight: 700; }
+
+  .seats-ok { color: var(--green); font-weight: 700; }
+  .seats-low { color: var(--text-dim); }
+
+  .route { color: var(--text); }
+  .route .arrow { color: var(--text-dim); margin: 0 4px; }
+
+  .empty-state {
+    padding: 60px 20px;
+    text-align: center;
+    color: var(--text-dim);
+    background: var(--panel);
+  }
+  .empty-state .big { font-family: 'Fraunces', serif; font-size: 20px; color: var(--text); margin-bottom: 6px; }
+
+  footer {
+    margin-top: 24px;
+    font-size: 11px;
+    color: var(--text-dim);
+  }
+
+  @media (max-width: 640px) {
+    table, thead, tbody, th, td, tr { display: block; }
+    thead { display: none; }
+    tbody tr { border: 1px solid var(--panel-line); margin-bottom: 10px; padding: 8px 0; }
+    tbody td { border: none; padding: 4px 14px; white-space: normal; }
+    tbody td::before {
+      content: attr(data-label);
+      display: inline-block;
+      width: 90px;
+      color: var(--text-dim);
+      font-size: 10px;
+      text-transform: uppercase;
+    }
+  }
+</style>
+</head>
+<body>
+  <div class="wrap">
+    <header>
+      <h1>Reward Seat Watch</h1>
+      <p class="subtitle">Melbourne / Sydney → Europe · Business &amp; First · Qantas Points</p>
+      <div class="meta" id="meta"></div>
+    </header>
+
+    <div id="content">
+      <div class="empty-state">Loading…</div>
+    </div>
+
+    <footer>Rows highlighted in green have enough seats for 2 passengers on the same fare bucket. Availability is not guaranteed until booked on qantas.com.</footer>
+  </div>
+
+<script>
+async function load() {
+  const contentEl = document.getElementById('content');
+  const metaEl = document.getElementById('meta');
+
+  let data;
+  try {
+    const res = await fetch('results.json', { cache: 'no-store' });
+    data = await res.json();
+  } catch (e) {
+    contentEl.innerHTML = '<div class="empty-state"><div class="big">Could not load results.json</div>Check the file exists in this repo.</div>';
+    return;
+  }
+
+  const flights = data.flights || [];
+  const generated = data.generated_at ? new Date(data.generated_at) : null;
+  const alertPax = data.alert_passengers || 2;
+
+  metaEl.innerHTML = `
+    <span><strong>${flights.length}</strong> fares found</span>
+    <span>Last checked: <strong>${generated ? generated.toLocaleString('en-AU', { dateStyle: 'medium', timeStyle: 'short' }) : '—'}</strong></span>
+    <span>Alert threshold: <strong>${alertPax}+ seats</strong></span>
+  `;
+
+  if (flights.length === 0) {
+    contentEl.innerHTML = '<div class="empty-state"><div class="big">Nothing found yet</div>The checker runs every 15 minutes. Come back soon.</div>';
+    return;
+  }
+
+  const fmtDate = (iso) => {
+    if (!iso) return '—';
+    const d = new Date(iso);
+    return d.toLocaleString('en-AU', { weekday: 'short', day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' });
+  };
+
+  const rows = flights.map(f => {
+    const bookable = (f.seats || 0) >= alertPax;
+    return `
+      <tr class="${bookable ? 'bookable' : ''}">
+        <td data-label="Depart">${fmtDate(f.departsAt)}</td>
+        <td data-label="Route" class="route">${f.origin}<span class="arrow">→</span>${f.destination}</td>
+        <td data-label="Cabin"><span class="cabin-badge cabin-${f.cabin}">${f.cabin}</span></td>
+        <td data-label="Points" class="points">${f.points ? f.points.toLocaleString() : '—'}</td>
+        <td data-label="Tax">${f.tax ? f.currency + f.tax : '—'}</td>
+        <td data-label="Stops">${f.stopovers ?? '—'}</td>
+        <td data-label="Seats" class="${bookable ? 'seats-ok' : 'seats-low'}">${f.seats ?? '—'}</td>
+      </tr>
+    `;
+  }).join('');
+
+  contentEl.innerHTML = `
+    <table>
+      <thead>
+        <tr>
+          <th>Depart</th><th>Route</th><th>Cabin</th><th>Points</th><th>Tax</th><th>Stops</th><th>Seats</th>
+        </tr>
+      </thead>
+      <tbody>${rows}</tbody>
+    </table>
+  `;
+}
+
+load();
+</script>
+</body>
+</html>
