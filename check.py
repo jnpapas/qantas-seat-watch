@@ -4,6 +4,7 @@ import smtplib
 import sys
 import urllib.parse
 from datetime import datetime, timezone
+from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 
 from playwright.sync_api import sync_playwright
@@ -17,7 +18,7 @@ SEARCH_WINDOWS = [
     ("2027-07-01", "2027-07-31"),
 ]
 
-ALERT_PASSENGERS = 1       # trigger an email only when a fare bucket has >= this many seats
+ALERT_PASSENGERS = 2       # trigger an email only when a fare bucket has >= this many seats
 FETCH_PASSENGERS = 1       # query broadly so 1-seat results aren't filtered out server-side
 CABINS = "Business,First"
 DEST = ";EU"
@@ -248,18 +249,134 @@ def format_entry_for_email(e):
     return "\n".join(lines)
 
 
+def fmt_points(points):
+    return f"{points:,}" if points is not None else "—"
+
+
+def build_html_email(entries):
+    ink = "#1A1D23"
+    dim = "#6B7280"
+    line = "#E5E7EB"
+    gold = "#A9791A"
+    gold_bg = "#FBF4E2"
+    green = "#1E8A5F"
+    green_bg = "#E9F7F0"
+
+    cards = []
+    for e in entries:
+        legs_html = ""
+        for i, leg in enumerate(e.get("legs", []), start=1):
+            layover = ""
+            if leg.get("layoverDuration") and leg["layoverDuration"] not in ("00h 00m", "0h 00m"):
+                layover = (
+                    f'<div style="font-size:12px;color:{dim};margin:2px 0 8px 20px;">'
+                    f'Layover {leg["layoverDuration"]} \u00b7 {leg["destName"]} ({leg["destCode"]})'
+                    f"</div>"
+                )
+            legs_html += f"""
+            <div style="font-size:13px;color:{ink};padding:8px 0 0 20px;border-left:2px solid {line};margin-left:6px;">
+              <strong>{leg['originCode']} \u2192 {leg['destCode']}</strong>
+              <span style="color:{dim};"> \u00b7 {leg['originName']} \u2192 {leg['destName']}</span><br>
+              <span style="color:{dim};">{leg['flightNumber']} operated by {leg['operatedBy']} \u00b7 {leg['equipment']} \u00b7 {leg['duration']}</span>
+            </div>
+            {layover}
+            """
+
+        cabin_color = gold if e["cabin"] == "Business" else ink
+        cabin_bg = gold_bg if e["cabin"] == "Business" else "#F3F4F6"
+
+        cards.append(f"""
+        <table role="presentation" width="100%" cellpadding="0" cellspacing="0"
+               style="background:#ffffff;border:1px solid {line};border-radius:8px;margin-bottom:16px;">
+          <tr>
+            <td style="padding:20px;">
+              <table role="presentation" width="100%" cellpadding="0" cellspacing="0">
+                <tr>
+                  <td style="font-size:17px;font-weight:600;color:{ink};">
+                    {e['originName']} ({e['originCode']}) &rarr; {e['destName']} ({e['destCode']})
+                  </td>
+                  <td align="right">
+                    <span style="background:{green_bg};color:{green};font-size:12px;font-weight:600;
+                                 padding:4px 10px;border-radius:999px;white-space:nowrap;">
+                      {e['seats']} seat(s) free
+                    </span>
+                  </td>
+                </tr>
+              </table>
+
+              <table role="presentation" cellpadding="0" cellspacing="0" style="margin:10px 0 4px;">
+                <tr>
+                  <td style="background:{cabin_bg};color:{cabin_color};font-size:12px;font-weight:600;
+                             padding:3px 9px;border-radius:4px;">{e['cabin']}</td>
+                  <td style="width:10px;"></td>
+                  <td style="font-size:14px;color:{gold};font-weight:700;">{fmt_points(e['points'])} pts</td>
+                  <td style="font-size:13px;color:{dim};padding-left:6px;">+ {e['currency']}{e['tax']} tax</td>
+                </tr>
+              </table>
+
+              <div style="font-size:13px;color:{dim};margin:10px 0 14px;">
+                Depart <strong style="color:{ink};">{fmt_dt(e['departsAt'])}</strong>
+                &rarr; Arrive <strong style="color:{ink};">{fmt_dt(e['arrivesAt'])}</strong>
+                &nbsp;\u00b7&nbsp; {e['duration']}, {e['stopovers']} stop(s)
+              </div>
+
+              {legs_html}
+
+              <div style="margin-top:16px;">
+                <a href="https://flightrewardfinder.qantas.com/"
+                   style="display:inline-block;background:{ink};color:#ffffff;font-size:13px;
+                          font-weight:600;text-decoration:none;padding:10px 18px;border-radius:6px;">
+                  Check live availability &rarr;
+                </a>
+              </div>
+            </td>
+          </tr>
+        </table>
+        """)
+
+    body = "".join(cards)
+
+    return f"""<!DOCTYPE html>
+<html>
+<body style="margin:0;padding:0;background:#F3F4F6;font-family:-apple-system,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;">
+  <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:#F3F4F6;padding:24px 0;">
+    <tr>
+      <td align="center">
+        <table role="presentation" width="100%" style="max-width:600px;" cellpadding="0" cellspacing="0">
+          <tr>
+            <td style="padding:0 0 20px;">
+              <div style="font-size:20px;font-weight:700;color:{ink};">
+                New reward seat(s) found
+              </div>
+              <div style="font-size:13px;color:{dim};margin-top:4px;">
+                {len(entries)} fare(s) with {ALERT_PASSENGERS}+ seats \u00b7 MEL/SYD &rarr; Europe \u00b7 Business/First
+              </div>
+            </td>
+          </tr>
+          <tr><td>{body}</td></tr>
+        </table>
+      </td>
+    </tr>
+  </table>
+</body>
+</html>"""
+
+
 def send_email(new_entries):
-    body = (
+    plain_body = (
         f"New Qantas reward seats found ({ALERT_PASSENGERS} pax, "
         f"MEL/SYD-Europe, Business/First):\n\n"
     )
-    body += "\n\n".join(format_entry_for_email(e) for e in new_entries)
-    body += "\n\nCheck live: https://flightrewardfinder.qantas.com/"
+    plain_body += "\n\n".join(format_entry_for_email(e) for e in new_entries)
+    plain_body += "\n\nCheck live: https://flightrewardfinder.qantas.com/"
 
-    msg = MIMEText(body)
+    msg = MIMEMultipart("alternative")
     msg["Subject"] = f"New Qantas reward seat(s) found ({len(new_entries)})"
     msg["From"] = GMAIL_USER
     msg["To"] = ALERT_TO
+
+    msg.attach(MIMEText(plain_body, "plain"))
+    msg.attach(MIMEText(build_html_email(new_entries), "html"))
 
     with smtplib.SMTP_SSL("smtp.gmail.com", 465) as server:
         server.login(GMAIL_USER, GMAIL_APP_PASSWORD)
