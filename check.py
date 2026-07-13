@@ -12,20 +12,19 @@ from playwright.sync_api import sync_playwright
 BASE_API = "https://flightrewardfinder.qantas.com/api/search"
 BASE_SEARCH_PAGE = "https://flightrewardfinder.qantas.com/?pg=1&d=;EU&dr={dr}&p=2&c=Business,First"
 
-# Searched separately per month, since live examples were single-month windows
 SEARCH_WINDOWS = [
     ("2027-06-01", "2027-06-30"),
     ("2027-07-01", "2027-07-31"),
 ]
 
-ALERT_PASSENGERS = 1       # trigger an email only when a fare bucket has >= this many seats
+ALERT_PASSENGERS = 2       # trigger an email only when a fare bucket has >= this many seats
 FETCH_PASSENGERS = 1       # query broadly so 1-seat results aren't filtered out server-side
 CABINS = "Business,First"
 DEST = ";EU"
 ORIGIN = ";OC"
 
-STATE_FILE = "state.json"          # tracks only >=2-seat entries, for email diffing
-RESULTS_FILE = "results.json"      # ALL entries found, for the dashboard
+STATE_FILE = "state.json"
+RESULTS_FILE = "results.json"
 RAW_DUMP_FILE = "last_raw_response.json"
 DEBUG_SCREENSHOT = "debug_screenshot.png"
 
@@ -127,42 +126,60 @@ def fetch_availability():
 
 
 def flatten_entries(data):
-    """One dict per (flight, cabin) pair where that cabin actually has an
-    offer -- this is the full picture, used for both the dashboard and the
-    alert-worthy subset."""
+    """One dict per (flight, cabin) pair where that cabin has an offer.
+    Includes full airport names and every leg with operating carrier, so
+    the dashboard and email have everything needed without a code lookup."""
     entries = []
     if not data:
         return entries
 
     for flight in data.get("flights", []):
-        origin = (flight.get("origin") or {}).get("code")
-        dest = (flight.get("destination") or {}).get("code")
-        departs = flight.get("departsAt")
-        stopovers = flight.get("stopovers")
-        duration = flight.get("duration")
-        cabins = flight.get("cabins") or {}
+        origin = flight.get("origin") or {}
+        dest = flight.get("destination") or {}
+        legs = []
+        for leg in flight.get("legs", []):
+            leg_origin = leg.get("origin") or {}
+            leg_dest = leg.get("destination") or {}
+            legs.append({
+                "departsAt": leg.get("departsAt"),
+                "arrivesAt": leg.get("arrivesAt"),
+                "duration": leg.get("duration"),
+                "layoverDuration": leg.get("layoverDuration"),
+                "flightNumber": leg.get("flightNumber"),
+                "operatedBy": leg.get("operatedBy"),
+                "equipment": leg.get("equipment"),
+                "originCode": leg_origin.get("code"),
+                "originName": leg_origin.get("city") or leg_origin.get("name"),
+                "destCode": leg_dest.get("code"),
+                "destName": leg_dest.get("city") or leg_dest.get("name"),
+            })
 
+        cabins = flight.get("cabins") or {}
         for cabin_name in ("Business", "First"):
             cabin = cabins.get(cabin_name)
             if not cabin:
                 continue
             entries.append({
-                "departsAt": departs,
-                "origin": origin,
-                "destination": dest,
+                "departsAt": flight.get("departsAt"),
+                "arrivesAt": flight.get("arrivesAt"),
+                "originCode": origin.get("code"),
+                "originName": origin.get("city") or origin.get("name"),
+                "destCode": dest.get("code"),
+                "destName": dest.get("city") or dest.get("name"),
                 "cabin": cabin_name,
                 "points": cabin.get("points"),
                 "tax": cabin.get("tax"),
                 "currency": cabin.get("currency"),
                 "seats": cabin.get("seats"),
-                "stopovers": stopovers,
-                "duration": duration,
+                "stopovers": flight.get("stopovers"),
+                "duration": flight.get("duration"),
+                "legs": legs,
             })
     return entries
 
 
 def entry_key(e):
-    return (f"{e['departsAt']} | {e['origin']}->{e['destination']} | "
+    return (f"{e['departsAt']} | {e['originCode']}->{e['destCode']} | "
             f"{e['cabin']} | {e['points']} pts | {e['seats']} seats")
 
 
@@ -190,13 +207,57 @@ def save_results(entries):
         json.dump(payload, f, indent=2)
 
 
-def send_email(new_keys):
-    body = f"New Qantas reward seats found ({ALERT_PASSENGERS} pax, MEL/SYD-Europe, Business/First):\n\n"
-    body += "\n".join(sorted(new_keys))
+def fmt_dt(iso):
+    if not iso:
+        return "—"
+    try:
+        d = datetime.fromisoformat(iso)
+    except ValueError:
+        return iso
+    return d.strftime("%a, %-d %b %Y %H:%M")
+
+
+def format_entry_for_email(e):
+    lines = []
+    lines.append(
+        f"\u2708 {e['originName']} ({e['originCode']}) \u2192 "
+        f"{e['destName']} ({e['destCode']})"
+    )
+    points = f"{e['points']:,}" if e.get("points") is not None else "—"
+    tax = f"{e['currency']}{e['tax']}" if e.get("tax") is not None else ""
+    lines.append(
+        f"   {e['cabin']} \u00b7 {points} pts + {tax} tax \u00b7 "
+        f"{e['seats']} seat(s) available"
+    )
+    lines.append(
+        f"   Depart {fmt_dt(e['departsAt'])} \u2192 Arrive {fmt_dt(e['arrivesAt'])} "
+        f"({e['duration']}, {e['stopovers']} stop(s))"
+    )
+    for i, leg in enumerate(e.get("legs", []), start=1):
+        lines.append(
+            f"   Leg {i}: {leg['originCode']} \u2192 {leg['destCode']} "
+            f"({leg['originName']} \u2192 {leg['destName']}) \u00b7 "
+            f"{leg['flightNumber']} operated by {leg['operatedBy']} \u00b7 "
+            f"{leg['equipment']} \u00b7 {leg['duration']}"
+        )
+        if leg.get("layoverDuration") and leg["layoverDuration"] not in ("00h 00m", "0h 00m"):
+            lines.append(
+                f"      Layover: {leg['layoverDuration']} in "
+                f"{leg['destName']} ({leg['destCode']})"
+            )
+    return "\n".join(lines)
+
+
+def send_email(new_entries):
+    body = (
+        f"New Qantas reward seats found ({ALERT_PASSENGERS} pax, "
+        f"MEL/SYD-Europe, Business/First):\n\n"
+    )
+    body += "\n\n".join(format_entry_for_email(e) for e in new_entries)
     body += "\n\nCheck live: https://flightrewardfinder.qantas.com/"
 
     msg = MIMEText(body)
-    msg["Subject"] = f"New Qantas reward seat(s) found ({len(new_keys)})"
+    msg["Subject"] = f"New Qantas reward seat(s) found ({len(new_entries)})"
     msg["From"] = GMAIL_USER
     msg["To"] = ALERT_TO
 
@@ -215,7 +276,8 @@ def main():
     save_results(all_entries)
 
     bookable_entries = [e for e in all_entries if (e.get("seats") or 0) >= ALERT_PASSENGERS]
-    current_keys = {entry_key(e) for e in bookable_entries}
+    entries_by_key = {entry_key(e): e for e in bookable_entries}
+    current_keys = set(entries_by_key.keys())
     previous_keys = load_previous_state()
 
     if data is not None:
@@ -231,8 +293,9 @@ def main():
 
     new_keys = current_keys - previous_keys
     if new_keys:
-        print(f"Found {len(new_keys)} new seat(s) -- sending email.")
-        send_email(new_keys)
+        new_entries = [entries_by_key[k] for k in new_keys]
+        print(f"Found {len(new_entries)} new seat(s) -- sending email.")
+        send_email(new_entries)
     else:
         print("No new seats this run.")
 
