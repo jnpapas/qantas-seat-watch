@@ -1,0 +1,40 @@
+{
+  "generated_at": "2026-07-13T07:34:54.449728+00:00",
+  "search_windows": [
+    [
+      "2027-06-01",
+      "2027-06-30"
+    ],
+    [
+      "2027-07-01",
+      "2027-07-31"
+    ]
+  ],
+  "alert_passengers": 2,
+  "flights": [
+    {
+      "departsAt": "2027-06-01T16:10:00",
+      "origin": "MEL",
+      "destination": "FRA",
+      "cabin": "Business",
+      "points": 182900,
+      "tax": 709,
+      "currency": "AU$",
+      "seats": 1,
+      "stopovers": 1,
+      "duration": "23 hours"
+    },
+    {
+      "departsAt": "2027-06-08T16:10:00",
+      "origin": "SYD",
+      "destination": "FRA",
+      "cabin": "Business",
+      "points": 182900,
+      "tax": 693,
+      "currency": "AU$",
+      "seats": 1,
+      "stopovers": 1,
+      "duration": "23 hours"
+    }
+  ]
+}
