@@ -10,6 +10,7 @@ from playwright.sync_api import sync_playwright
 SEARCH_URL = "https://flightrewardfinder.qantas.com/?pg=1&d=;EU&dr=2027-06-01I2027-07-30&p=2&c=Business,First"
 STATE_FILE = "state.json"
 RAW_DUMP_FILE = "last_raw_response.json"  # written every run, for debugging the schema
+DEBUG_SCREENSHOT = "debug_screenshot.png"  # written every run, for debugging
 
 GMAIL_USER = os.environ["GMAIL_USER"]
 GMAIL_APP_PASSWORD = os.environ["GMAIL_APP_PASSWORD"]
@@ -30,11 +31,34 @@ def fetch_availability():
                 pass
 
     with sync_playwright() as p:
-        browser = p.chromium.launch()
-        page = browser.new_page()
+        browser = p.chromium.launch(
+            args=["--disable-blink-features=AutomationControlled"]
+        )
+        page = browser.new_page(
+            user_agent=(
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                "(KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36"
+            ),
+            viewport={"width": 1366, "height": 900},
+            locale="en-AU",
+        )
         page.on("response", handle_response)
-        page.goto(SEARCH_URL, wait_until="networkidle", timeout=60000)
-        page.wait_for_timeout(3000)  # let a late-firing API call resolve
+
+        try:
+            page.goto(SEARCH_URL, wait_until="networkidle", timeout=60000)
+        except Exception as e:
+            print(f"goto() raised: {e}")
+
+        page.wait_for_timeout(5000)  # let a late-firing API call / challenge resolve
+
+        # Always capture debug evidence of what the browser actually saw
+        print(f"Final page title: {page.title()!r}")
+        print(f"Final page URL: {page.url}")
+        try:
+            page.screenshot(path=DEBUG_SCREENSHOT, full_page=True)
+        except Exception as e:
+            print(f"screenshot failed: {e}")
+
         browser.close()
 
     return captured.get("data")
