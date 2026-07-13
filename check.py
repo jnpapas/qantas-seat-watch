@@ -2,30 +2,91 @@ import json
 import os
 import smtplib
 import sys
+import urllib.parse
 from email.mime.text import MIMEText
 
 from playwright.sync_api import sync_playwright
 
 # --- Configuration ---
-SEARCH_URL = "https://flightrewardfinder.qantas.com/?pg=1&d=;OC&dr=2026-07-20I2026-08-03&p=1&c=Economy"
-API_URL = (
-    "https://flightrewardfinder.qantas.com/api/search"
-    "?d=%3BOC&dr=2026-07-20I2026-08-03&c=Economy&p=1&o=%3BOC"
-)
+BASE_API = "https://flightrewardfinder.qantas.com/api/search"
+BASE_SEARCH_PAGE = "https://flightrewardfinder.qantas.com/?pg=1&d=;EU&dr={dr}&p=2&c=Business,First"
+
+# Searched separately per month, since live examples were single-month windows
+SEARCH_WINDOWS = [
+    ("2027-06-01", "2027-06-30"),
+    ("2027-07-01", "2027-07-31"),
+]
+
+PASSENGERS = 2
+CABINS = "Business,First"
+DEST = ";EU"
+ORIGIN = ";OC"
+
 STATE_FILE = "state.json"
-RAW_DUMP_FILE = "last_raw_response.json"  # written every run, for debugging the schema
-DEBUG_SCREENSHOT = "debug_screenshot.png"  # written every run, for debugging
+RAW_DUMP_FILE = "last_raw_response.json"
+DEBUG_SCREENSHOT = "debug_screenshot.png"
 
 GMAIL_USER = os.environ["GMAIL_USER"]
 GMAIL_APP_PASSWORD = os.environ["GMAIL_APP_PASSWORD"]
 ALERT_TO = os.environ["ALERT_EMAIL_TO"]
 
 
+def build_api_url(dr, page=1):
+    params = {
+        "d": DEST,
+        "dr": dr,
+        "c": CABINS,
+        "p": PASSENGERS,
+        "o": ORIGIN,
+        "pg": page,
+    }
+    return BASE_API + "?" + urllib.parse.urlencode(params, safe=";,")
+
+
+def fetch_all_flights_for_window(page_obj, dr):
+    """Fetch every page of results for one date-range window."""
+    all_flights = []
+    current_page = 1
+    max_known_page = 1
+
+    while current_page <= max_known_page:
+        api_url = build_api_url(dr, current_page)
+        result = page_obj.evaluate(
+            """
+            async (apiUrl) => {
+                const res = await fetch(apiUrl, { credentials: "include" });
+                const text = await res.text();
+                return { status: res.status, body: text };
+            }
+            """,
+            api_url,
+        )
+        if result["status"] != 200:
+            print(f"[{dr} page {current_page}] API status {result['status']}: "
+                  f"{result['body'][:300]}")
+            break
+        try:
+            data = json.loads(result["body"])
+        except json.JSONDecodeError as e:
+            print(f"[{dr} page {current_page}] Could not parse JSON: {e}")
+            break
+
+        flights = data.get("flights", [])
+        all_flights.extend(flights)
+
+        pagination = data.get("pagination", {})
+        max_known_page = pagination.get("maxKnownPage", current_page)
+        current_page += 1
+
+    return all_flights
+
+
 def fetch_availability():
     """Load the search page first (to establish cookies / pass any Cloudflare
-    check the way a normal visit does), then call the known API endpoint
-    directly via an in-page fetch() so it carries the right session/cookies
-    as if the page itself had made the call."""
+    check the way a normal visit does), then call the API directly for each
+    month window via an in-page fetch()."""
+    all_flights = []
+
     with sync_playwright() as p:
         browser = p.chromium.launch(
             args=["--disable-blink-features=AutomationControlled"]
@@ -39,28 +100,22 @@ def fetch_availability():
             locale="en-AU",
         )
 
+        full_range = f"{SEARCH_WINDOWS[0][0]}I{SEARCH_WINDOWS[-1][1]}"
         try:
-            page.goto(SEARCH_URL, wait_until="networkidle", timeout=60000)
+            page.goto(BASE_SEARCH_PAGE.format(dr=full_range),
+                      wait_until="networkidle", timeout=60000)
         except Exception as e:
             print(f"goto() raised: {e}")
-
         page.wait_for_timeout(3000)
 
         print(f"Page title after load: {page.title()!r}")
-        print(f"Page URL after load: {page.url}")
 
-        result = page.evaluate(
-            """
-            async (apiUrl) => {
-                const res = await fetch(apiUrl, { credentials: "include" });
-                const text = await res.text();
-                return { status: res.status, body: text };
-            }
-            """,
-            API_URL,
-        )
-
-        print(f"API call status: {result['status']}")
+        for start, end in SEARCH_WINDOWS:
+            dr = f"{start}I{end}"
+            print(f"Fetching {dr} ...")
+            flights = fetch_all_flights_for_window(page, dr)
+            print(f"  -> {len(flights)} flight(s) returned")
+            all_flights.extend(flights)
 
         try:
             page.screenshot(path=DEBUG_SCREENSHOT, full_page=True)
@@ -69,44 +124,33 @@ def fetch_availability():
 
         browser.close()
 
-    if result["status"] != 200:
-        print(f"API response body (first 800 chars): {result['body'][:800]}")
-        return None
-
-    try:
-        return json.loads(result["body"])
-    except json.JSONDecodeError as e:
-        print(f"Could not parse API response as JSON: {e}")
-        print(f"Body (first 800 chars): {result['body'][:800]}")
-        return None
+    return {"flights": all_flights}
 
 
 def extract_flight_keys(data):
-    """
-    Turns the raw API JSON into a set of short strings, one per distinct
-    (date, flight, cabin) combo, so we can diff runs against each other.
-
-    IMPORTANT: the field names below (results/flights/cabin/etc.) are a
-    best guess. Check last_raw_response.json after your first run and
-    adjust this function to match the real shape of the JSON.
-    """
+    """Turns flights into one string per (date, route, cabin) where at
+    least PASSENGERS seats are actually available -- this is the real
+    'bookable for both of us' check, done here as a safety net even
+    though the API's own p= filter should already handle it."""
     keys = set()
     if not data:
         return keys
 
-    for item in data.get("results", []):
-        date = item.get("date")
-        for flight in item.get("flights", []):
-            keys.add(
-                "|".join([
-                    str(date),
-                    str(flight.get("origin")),
-                    str(flight.get("destination")),
-                    str(flight.get("flightNumber")),
-                    str(flight.get("cabin")),
-                    str(flight.get("points")),
-                ])
-            )
+    for flight in data.get("flights", []):
+        origin = (flight.get("origin") or {}).get("code")
+        dest = (flight.get("destination") or {}).get("code")
+        departs = flight.get("departsAt")
+        cabins = flight.get("cabins") or {}
+
+        for cabin_name in ("Business", "First"):
+            cabin = cabins.get(cabin_name)
+            if cabin and cabin.get("seats", 0) >= PASSENGERS:
+                points = cabin.get("points")
+                seats = cabin.get("seats")
+                keys.add(
+                    f"{departs} | {origin}->{dest} | {cabin_name} | "
+                    f"{points} pts | {seats} seats"
+                )
     return keys
 
 
@@ -123,9 +167,9 @@ def save_state(keys):
 
 
 def send_email(new_keys):
-    body = "New Qantas reward seats found (MEL-Europe, Business/First):\n\n"
+    body = "New Qantas reward seats found (2 pax, MEL/SYD-Europe, Business/First):\n\n"
     body += "\n".join(sorted(new_keys))
-    body += f"\n\nCheck live: {SEARCH_URL}"
+    body += "\n\nCheck live: https://flightrewardfinder.qantas.com/"
 
     msg = MIMEText(body)
     msg["Subject"] = f"New Qantas reward seat(s) found ({len(new_keys)})"
@@ -140,7 +184,6 @@ def send_email(new_keys):
 def main():
     data = fetch_availability()
 
-    # Always dump the raw response so you can inspect/fix extract_flight_keys()
     with open(RAW_DUMP_FILE, "w") as f:
         json.dump(data, f, indent=2)
 
@@ -148,26 +191,19 @@ def main():
     previous_keys = load_previous_state()
 
     if data is not None:
-        if isinstance(data, dict):
-            print(f"Top-level JSON keys: {list(data.keys())}")
-        else:
-            print(f"Top-level JSON type: {type(data)}")
-        preview = json.dumps(data)
-        print(f"Response preview (first 3000 chars):\n{preview[:3000]}")
-        print(f"extract_flight_keys() found {len(current_keys)} entries")
+        print(f"extract_flight_keys() found {len(current_keys)} bookable "
+              f"entries (>= {PASSENGERS} seats)")
 
-    # Always write state.json, even on failure, so the commit step has
-    # something to add (an empty/unchanged state just means no new alert).
     save_state(current_keys if data is not None else previous_keys)
 
     if data is None:
-        print("Could not get a usable API response — see debug_screenshot.png "
-              "and last_raw_response.json for what the browser actually saw.")
+        print("Could not get a usable API response -- see debug_screenshot.png "
+              "and last_raw_response.json.")
         sys.exit(1)
 
     new_keys = current_keys - previous_keys
     if new_keys:
-        print(f"Found {len(new_keys)} new seat(s) — sending email.")
+        print(f"Found {len(new_keys)} new seat(s) -- sending email.")
         send_email(new_keys)
     else:
         print("No new seats this run.")
