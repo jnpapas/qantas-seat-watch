@@ -41,7 +41,7 @@
         "destName": "Frankfurt"
       }
     ],
-    "searchUrl": "https://flightrewardfinder.qantas.com/?pg=1&d=;EU&dr=2027-06-01I2027-06-30&p=1&c=Business,First"
+    "searchUrl": "https://flightrewardfinder.qantas.com/?pg=1&d=;EU&dr=2027-06-01I2027-06-30&p=2&c=Business,First"
   },
   {
     "departsAt": "2027-06-08T16:10:00",
@@ -85,6 +85,6 @@
         "destName": "Frankfurt"
       }
     ],
-    "searchUrl": "https://flightrewardfinder.qantas.com/?pg=1&d=;EU&dr=2027-06-01I2027-06-30&p=1&c=Business,First"
+    "searchUrl": "https://flightrewardfinder.qantas.com/?pg=1&d=;EU&dr=2027-06-01I2027-06-30&p=2&c=Business,First"
   }
 ]
