@@ -1,1 +1,8 @@
-[]
+[
+  "2027-06-01T14:25:00 | BNE->BLQ | Business | 211400 pts | 2 seats",
+  "2027-06-08T14:25:00 | BNE->BLQ | Business | 211400 pts | 2 seats",
+  "2027-06-10T14:25:00 | BNE->BLQ | Business | 211400 pts | 2 seats",
+  "2027-06-10T14:25:00 | BNE->VIE | Business | 193800 pts | 2 seats",
+  "2027-07-07T22:00:00 | ADL->AMS | Business | 182900 pts | 2 seats",
+  "2027-07-07T22:00:00 | ADL->MUC | Business | 182900 pts | 2 seats"
+]
